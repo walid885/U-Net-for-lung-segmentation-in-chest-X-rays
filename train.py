@@ -1,7 +1,3 @@
-# ============================================================================
-#  train.py - Optimized Version
-# ============================================================================
-
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
@@ -18,24 +14,28 @@ from utils.visualizer import Visualizer
 from data_loader import create_data_loaders
 
 def main():
+    # Detect device first
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    is_cuda = device.type == 'cuda'
+    
     # Optimized Configuration
     config = {
-        'batch_size': 32,  # Increased for better GPU utilization
-        'learning_rate': 2e-4,  # Slightly higher for faster convergence
+        'batch_size': 32,
+        'learning_rate': 2e-4,
         'weight_decay': 1e-4,
         'num_epochs': 100,
         'input_channels': 3,
         'num_classes': 1,
-        'device': torch.device('cuda' if torch.cuda.is_available() else 'cpu'),
+        'device': device,
         
-        # Performance optimizations
-        'compile_model': True,  # torch.compile for 20-30% speedup
-        'mixed_precision': True,  # AMP for memory + speed
-        'gradient_accumulation_steps': 1,  # Simulate larger batches
-        'num_workers': min(8, os.cpu_count()),  # Optimal data loading
-        'pin_memory': True,
-        'persistent_workers': True,
-        'prefetch_factor': 2,
+        # Performance optimizations (adjusted for CPU/GPU)
+        'compile_model': is_cuda,  # Only compile on GPU
+        'mixed_precision': is_cuda,  # Only use AMP on GPU
+        'gradient_accumulation_steps': 1,
+        'num_workers': min(8, os.cpu_count()) if is_cuda else 4,  # Fewer workers on CPU
+        'pin_memory': is_cuda,  # Only pin memory for GPU
+        'persistent_workers': is_cuda,
+        'prefetch_factor': 2 if is_cuda else 1,
         
         # Training optimizations
         'warmup_epochs': 5,
@@ -46,11 +46,11 @@ def main():
     
     print(f"Using device: {config['device']}")
     
-    # Performance optimizations
-    if config['device'].type == 'cuda':
-        torch.backends.cudnn.benchmark = True  # Optimize for fixed input sizes
-        torch.backends.cuda.matmul.allow_tf32 = True  # Faster matmul
-        torch.backends.cudnn.allow_tf32 = True  # Faster convolutions
+    # Performance optimizations (only for CUDA)
+    if is_cuda:
+        torch.backends.cudnn.benchmark = True
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
     
     # Create optimized data loaders
     train_loader, val_loader, test_loader = create_data_loaders(
@@ -65,7 +65,7 @@ def main():
         n_classes=config['num_classes']
     ).to(config['device'])
     
-    # Compile model for PyTorch 2.0+ (20-30% speedup)
+    # Compile model for PyTorch 2.0+ (only on GPU)
     if config['compile_model'] and hasattr(torch, 'compile'):
         try:
             model = torch.compile(model, mode='reduce-overhead')
@@ -95,8 +95,8 @@ def main():
     
     # Visualize results (optional - comment out for faster execution)
     visualizer = Visualizer(model, config['device'])
-    # visualizer.visualize_predictions(val_loader)
-    # visualizer.visualize_overlay(val_loader)
+    visualizer.visualize_predictions(val_loader)
+    visualizer.visualize_overlay(val_loader)
     
     print("Training completed successfully!")
 
