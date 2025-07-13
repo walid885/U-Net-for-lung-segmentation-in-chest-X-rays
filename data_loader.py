@@ -1,123 +1,154 @@
 import os
-import cv2
 import numpy as np
-import torch
+import cv2
 from torch.utils.data import Dataset, DataLoader
+import torch
 from torchvision import transforms
 from PIL import Image
 import matplotlib.pyplot as plt
 from sklearn.model_selection import train_test_split
 
-class LungDataset(Dataset):
+class MontgomeryDataset(Dataset):
     def __init__(self, image_paths, mask_paths, transform=None, target_size=(256, 256)):
         self.image_paths = image_paths
         self.mask_paths = mask_paths
         self.transform = transform
         self.target_size = target_size
-        
+    
     def __len__(self):
         return len(self.image_paths)
     
     def __getitem__(self, idx):
         # Load image
-        image = cv2.imread(self.image_paths[idx], cv2.IMREAD_GRAYSCALE)
+        image_path = self.image_paths[idx]
+        image = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
         image = cv2.resize(image, self.target_size)
         image = image.astype(np.float32) / 255.0
         
         # Load mask
-        mask = cv2.imread(self.mask_paths[idx], cv2.IMREAD_GRAYSCALE)
+        mask_path = self.mask_paths[idx]
+        mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
         mask = cv2.resize(mask, self.target_size)
-        mask = (mask > 127).astype(np.float32)  # Binary threshold
+        mask = (mask > 0).astype(np.float32)  # Binarize mask
         
-        # Convert to tensor
+        # Convert to tensors
         image = torch.from_numpy(image).unsqueeze(0)  # Add channel dimension
         mask = torch.from_numpy(mask).unsqueeze(0)
         
         if self.transform:
-            # Apply same transform to both image and mask
-            seed = torch.randint(0, 2147483647, (1,)).item()
-            torch.manual_seed(seed)
             image = self.transform(image)
-            torch.manual_seed(seed)
             mask = self.transform(mask)
-            
+        
         return image, mask
 
-def get_data_paths(data_dir):
-    """Get image and mask file paths from Montgomery dataset"""
-    image_dir = os.path.join(data_dir, 'CXR_png')
-    mask_dir = os.path.join(data_dir, 'ManualMask', 'GT')
+def load_montgomery_data(data_dir):
+    """
+    Load Montgomery County chest X-ray dataset
+    
+    Args:
+        data_dir: Path to Data/NLM-MontgomeryCXRSet/MontgomerySet
+    
+    Returns:
+        image_paths, mask_paths: Lists of file paths
+    """
+    image_dir = os.path.join(data_dir, "CXR_png")
+    mask_dir = os.path.join(data_dir, "ManualMask")
     
     image_paths = []
     mask_paths = []
     
+    # Get all image files
     for filename in os.listdir(image_dir):
         if filename.endswith('.png'):
             image_path = os.path.join(image_dir, filename)
-            # Montgomery masks have specific naming convention
-            mask_filename = filename.replace('.png', '_mask.png')
-            mask_path = os.path.join(mask_dir, mask_filename)
             
-            if os.path.exists(mask_path):
+            # Find corresponding mask files
+            base_name = filename.replace('.png', '')
+            
+            # Look for left and right lung masks
+            left_mask = os.path.join(mask_dir, f"{base_name}_left.png")
+            right_mask = os.path.join(mask_dir, f"{base_name}_right.png")
+            
+            if os.path.exists(left_mask) and os.path.exists(right_mask):
+                # Combine left and right masks
+                combined_mask_path = combine_lung_masks(left_mask, right_mask, mask_dir, base_name)
                 image_paths.append(image_path)
-                mask_paths.append(mask_path)
+                mask_paths.append(combined_mask_path)
     
     return image_paths, mask_paths
 
-def create_data_loaders(data_dir, batch_size=16, test_size=0.3, val_size=0.5):
-    """Create train, validation, and test data loaders"""
+def combine_lung_masks(left_mask_path, right_mask_path, output_dir, base_name):
+    """
+    Combine left and right lung masks into single mask
+    """
+    left_mask = cv2.imread(left_mask_path, cv2.IMREAD_GRAYSCALE)
+    right_mask = cv2.imread(right_mask_path, cv2.IMREAD_GRAYSCALE)
     
-    # Get file paths
-    image_paths, mask_paths = get_data_paths(data_dir)
-    print(f"Found {len(image_paths)} image-mask pairs")
+    # Combine masks
+    combined_mask = np.logical_or(left_mask > 0, right_mask > 0).astype(np.uint8) * 255
+    
+    # Save combined mask
+    combined_path = os.path.join(output_dir, f"{base_name}_combined.png")
+    cv2.imwrite(combined_path, combined_mask)
+    
+    return combined_path
+
+def create_data_loaders(data_dir, batch_size=4, val_split=0.2, test_split=0.1):
+    """
+    Create training, validation, and test data loaders
+    """
+    # Load data paths
+    image_paths, mask_paths = load_montgomery_data(data_dir)
+    
+    print(f"Total samples: {len(image_paths)}")
     
     # Split data
-    train_images, temp_images, train_masks, temp_masks = train_test_split(
-        image_paths, mask_paths, test_size=test_size, random_state=42
+    train_imgs, temp_imgs, train_masks, temp_masks = train_test_split(
+        image_paths, mask_paths, test_size=val_split+test_split, random_state=42
     )
     
-    val_images, test_images, val_masks, test_masks = train_test_split(
-        temp_images, temp_masks, test_size=val_size, random_state=42
+    val_imgs, test_imgs, val_masks, test_masks = train_test_split(
+        temp_imgs, temp_masks, test_size=test_split/(val_split+test_split), random_state=42
     )
     
-    print(f"Train: {len(train_images)}, Val: {len(val_images)}, Test: {len(test_images)}")
+    print(f"Train samples: {len(train_imgs)}")
+    print(f"Val samples: {len(val_imgs)}")
+    print(f"Test samples: {len(test_imgs)}")
     
     # Data augmentation for training
     train_transform = transforms.Compose([
         transforms.RandomHorizontalFlip(p=0.5),
         transforms.RandomRotation(degrees=10),
-        transforms.ColorJitter(brightness=0.2, contrast=0.2)
     ])
     
-    # No augmentation for validation and test
-    val_test_transform = None
-    
     # Create datasets
-    train_dataset = LungDataset(train_images, train_masks, transform=train_transform)
-    val_dataset = LungDataset(val_images, val_masks, transform=val_test_transform)
-    test_dataset = LungDataset(test_images, test_masks, transform=val_test_transform)
+    train_dataset = MontgomeryDataset(train_imgs, train_masks, transform=train_transform)
+    val_dataset = MontgomeryDataset(val_imgs, val_masks)
+    test_dataset = MontgomeryDataset(test_imgs, test_masks)
     
     # Create data loaders
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=4)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=4)
-    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=4)
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
+    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
     
     return train_loader, val_loader, test_loader
 
-def visualize_sample(data_loader, num_samples=4):
-    """Visualize sample images and masks"""
-    data_iter = iter(data_loader)
-    images, masks = next(data_iter)
+def visualize_samples(data_loader, num_samples=4):
+    """
+    Visualize sample images and masks
+    """
+    dataiter = iter(data_loader)
+    images, masks = next(dataiter)
     
     fig, axes = plt.subplots(2, num_samples, figsize=(15, 6))
     
     for i in range(num_samples):
-        # Original image
+        # Display image
         axes[0, i].imshow(images[i].squeeze(), cmap='gray')
         axes[0, i].set_title(f'Image {i+1}')
         axes[0, i].axis('off')
         
-        # Mask
+        # Display mask
         axes[1, i].imshow(masks[i].squeeze(), cmap='gray')
         axes[1, i].set_title(f'Mask {i+1}')
         axes[1, i].axis('off')
@@ -125,34 +156,39 @@ def visualize_sample(data_loader, num_samples=4):
     plt.tight_layout()
     plt.show()
 
-def check_dataset_info(data_dir):
-    """Check dataset statistics"""
-    image_paths, mask_paths = get_data_paths(data_dir)
+def get_dataset_statistics(data_loader):
+    """
+    Calculate dataset statistics
+    """
+    total_samples = 0
+    total_pixels = 0
+    positive_pixels = 0
+    
+    for images, masks in data_loader:
+        total_samples += images.size(0)
+        total_pixels += masks.numel()
+        positive_pixels += masks.sum().item()
+    
+    positive_ratio = positive_pixels / total_pixels
     
     print(f"Dataset Statistics:")
-    print(f"Total samples: {len(image_paths)}")
+    print(f"Total samples: {total_samples}")
+    print(f"Total pixels: {total_pixels}")
+    print(f"Positive pixels (lung): {positive_pixels}")
+    print(f"Positive ratio: {positive_ratio:.4f}")
     
-    # Check image dimensions
-    sample_image = cv2.imread(image_paths[0], cv2.IMREAD_GRAYSCALE)
-    print(f"Original image shape: {sample_image.shape}")
-    
-    # Check mask statistics
-    sample_mask = cv2.imread(mask_paths[0], cv2.IMREAD_GRAYSCALE)
-    print(f"Original mask shape: {sample_mask.shape}")
-    print(f"Mask unique values: {np.unique(sample_mask)}")
-    
-    return len(image_paths)
+    return positive_ratio
 
 if __name__ == "__main__":
-    # Test the data loader
-    data_dir = "data/Montgomery"  # Adjust path as needed
-    
-    # Check dataset info
-    check_dataset_info(data_dir)
+    # Example usage
+    data_dir = "Data/NLM-MontgomeryCXRSet/MontgomerySet"
     
     # Create data loaders
-    train_loader, val_loader, test_loader = create_data_loaders(data_dir, batch_size=8)
+    train_loader, val_loader, test_loader = create_data_loaders(data_dir)
     
     # Visualize samples
-    print("\nVisualizing training samples:")
-    visualize_sample(train_loader)
+    print("Training samples:")
+    visualize_samples(train_loader)
+    
+    # Get dataset statistics
+    get_dataset_statistics(train_loader)
