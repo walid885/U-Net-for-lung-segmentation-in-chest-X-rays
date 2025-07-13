@@ -73,8 +73,8 @@ class OptimizedLungDataset(Dataset):
 
 def create_optimized_dataloader(dataset, batch_size=4, shuffle=True, is_train=True):
     """Create optimized DataLoader with multiprocessing"""
-    # Use optimal number of workers
-    num_workers = min(mp.cpu_count() - 1, 8)  # Leave 1 CPU free, max 8 workers
+    # Use optimal number of workers - reduced to prevent crashes
+    num_workers = min(mp.cpu_count() // 2, 4)  # Use half cores, max 4 workers
     
     # Reduce workers for small datasets to avoid overhead
     if len(dataset) < 50:
@@ -179,50 +179,137 @@ def create_transforms():
     
     return image_transform, mask_transform
 
-def visualize_samples_non_blocking(dataloader, max_samples=4):
-    """Non-blocking visualization"""
-    print("Visualizing samples...")
+def visualize_data_pipeline(dataloader, dataset_name="Dataset"):
+    """Comprehensive visualization of data loading pipeline"""
+    print(f"\n{'='*60}")
+    print(f"DATA LOADING PIPELINE EVALUATION - {dataset_name}")
+    print(f"{'='*60}")
     
     # Get first batch
     batch = next(iter(dataloader))
     images, masks = batch
     
-    # Plot without blocking
-    fig, axes = plt.subplots(2, min(max_samples, len(images)), figsize=(15, 6))
+    # Pipeline statistics
+    print(f"Batch size: {len(images)}")
+    print(f"Image shape: {images[0].shape}")
+    print(f"Mask shape: {masks[0].shape}")
+    print(f"Image dtype: {images[0].dtype}")
+    print(f"Mask dtype: {masks[0].dtype}")
+    print(f"Image range: [{images[0].min():.3f}, {images[0].max():.3f}]")
+    print(f"Mask range: [{masks[0].min():.3f}, {masks[0].max():.3f}]")
     
-    for i in range(min(max_samples, len(images))):
-        # Original image
-        img = images[i].permute(1, 2, 0)
-        img = img * torch.tensor([0.229, 0.224, 0.225]) + torch.tensor([0.485, 0.456, 0.406])
-        img = torch.clamp(img, 0, 1)
+    # Create visualization with proper backend
+    try:
+        plt.ioff()  # Turn off interactive mode
+        fig, axes = plt.subplots(3, 4, figsize=(16, 12))
+        fig.suptitle(f'{dataset_name} - Data Loading Pipeline Visualization', fontsize=16, fontweight='bold')
         
-        axes[0, i].imshow(img)
-        axes[0, i].set_title(f'Image {i+1}')
-        axes[0, i].axis('off')
+        for i in range(min(4, len(images))):
+            # Original transformed image (denormalized for display)
+            img = images[i].clone()
+            img = img * torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1) + torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
+            img = torch.clamp(img, 0, 1).permute(1, 2, 0)
+            
+            axes[0, i].imshow(img)
+            axes[0, i].set_title(f'Transformed Image {i+1}', fontsize=10)
+            axes[0, i].axis('off')
+            
+            # Mask
+            mask = masks[i].squeeze()
+            axes[1, i].imshow(mask, cmap='gray')
+            axes[1, i].set_title(f'Combined Mask {i+1}', fontsize=10)
+            axes[1, i].axis('off')
+            
+            # Overlay
+            overlay = img.numpy().copy()
+            mask_colored = plt.cm.Reds(mask.numpy())[:, :, :3]
+            overlay = 0.7 * overlay + 0.3 * mask_colored
+            axes[2, i].imshow(overlay)
+            axes[2, i].set_title(f'Overlay {i+1}', fontsize=10)
+            axes[2, i].axis('off')
         
-        # Mask
-        axes[1, i].imshow(masks[i].squeeze(), cmap='gray')
-        axes[1, i].set_title(f'Mask {i+1}')
-        axes[1, i].axis('off')
+        plt.tight_layout()
+        plt.ion()  # Turn interactive mode back on
+        plt.show()
+        
+        # Force display and wait briefly
+        plt.draw()
+        plt.pause(2)  # Wait 2 seconds to ensure display
+        
+    except Exception as e:
+        print(f"Visualization error: {e}")
+        print("Continuing without visualization...")
     
-    plt.tight_layout()
-    plt.show(block=False)  # Non-blocking display
-    plt.pause(0.001)  # Brief pause to render
+    # Transformation explanation
+    print(f"\n{'='*60}")
+    print("TRANSFORMATION PIPELINE EXPLANATION")
+    print(f"{'='*60}")
+    print("1. IMAGE PROCESSING:")
+    print("   • Loaded as RGB (3 channels)")
+    print("   • Resized to 256x256 pixels")
+    print("   • Converted to tensor [0,1]")
+    print("   • Normalized with ImageNet stats:")
+    print("     - Mean: [0.485, 0.456, 0.406]")
+    print("     - Std:  [0.229, 0.224, 0.225]")
+    
+    print("\n2. MASK PROCESSING:")
+    print("   • Loaded as grayscale (1 channel)")
+    print("   • Resized to 256x256 pixels")
+    print("   • Converted to tensor [0,1]")
+    print("   • Left + Right masks combined using max()")
+    
+    print("\n3. MULTIPROCESSING OPTIMIZATION:")
+    print(f"   • Workers: {dataloader.num_workers}")
+    print(f"   • Batch size: {dataloader.batch_size}")
+    print(f"   • Pin memory: {dataloader.pin_memory}")
+    print(f"   • Persistent workers: {dataloader.persistent_workers}")
+    
+    return fig if 'fig' in locals() else None
 
-def benchmark_dataloader(dataloader, name, num_batches=10):
-    """Benchmark dataloader performance"""
-    print(f"\nBenchmarking {name}...")
+def analyze_dataset_statistics(train_loader, val_loader, test_loader):
+    """Analyze and display dataset statistics"""
+    print(f"\n{'='*60}")
+    print("DATASET STATISTICS ANALYSIS")
+    print(f"{'='*60}")
     
-    start_time = time.time()
-    for i, batch in enumerate(dataloader):
-        if i >= num_batches:
-            break
+    datasets = [
+        ("Training", train_loader),
+        ("Validation", val_loader),
+        ("Test", test_loader)
+    ]
     
-    end_time = time.time()
-    avg_time = (end_time - start_time) / num_batches
-    print(f"{name}: {avg_time:.3f}s per batch")
+    for name, loader in datasets:
+        # Sample statistics
+        batch = next(iter(loader))
+        images, masks = batch
+        
+        print(f"\n{name} Set:")
+        print(f"  • Total samples: {len(loader.dataset)}")
+        print(f"  • Batch size: {loader.batch_size}")
+        print(f"  • Batches per epoch: {len(loader)}")
+        print(f"  • Image stats: mean={images.mean():.3f}, std={images.std():.3f}")
+        print(f"  • Mask coverage: {masks.mean():.1%} of pixels")
+        print(f"  • Workers: {loader.num_workers}")
+
+def print_performance_summary(train_time, val_time, test_time, total_time):
+    """Print performance summary"""
+    print(f"\n{'='*60}")
+    print("PERFORMANCE SUMMARY")
+    print(f"{'='*60}")
+    print(f"Training DataLoader:   {train_time:.3f}s per batch")
+    print(f"Validation DataLoader: {val_time:.3f}s per batch")
+    print(f"Test DataLoader:       {test_time:.3f}s per batch")
+    print(f"Total setup time:      {total_time:.2f}s")
+    print(f"CPU cores used:        {mp.cpu_count()}")
     
-    return avg_time
+    # Performance tips
+    print(f"\nOPTIMIZATION FEATURES ACTIVE:")
+    print("✓ Multiprocessing data loading")
+    print("✓ Memory pinning for GPU transfer")
+    print("✓ Persistent workers")
+    print("✓ Data prefetching")
+    print("✓ Small dataset preloading")
+    print("✓ Separate image/mask transforms")
 
 def main():
     # Set multiprocessing start method
@@ -270,24 +357,38 @@ def main():
     test_loader = create_optimized_dataloader(test_dataset, batch_size=1, shuffle=False, is_train=False)
     
     # Benchmark performance
-    benchmark_dataloader(train_loader, "Training DataLoader")
-    benchmark_dataloader(val_loader, "Validation DataLoader")
+    print("\nBenchmarking performance...")
+    train_time = benchmark_dataloader(train_loader, "Training", 5)
+    val_time = benchmark_dataloader(val_loader, "Validation", 5)  
+    test_time = benchmark_dataloader(test_loader, "Test", 3)
     
-    # Quick visualization (non-blocking)
-    visualize_samples_non_blocking(train_loader)
+    # Comprehensive visualization and analysis
+    visualize_data_pipeline(train_loader, "Training Dataset")
+    analyze_dataset_statistics(train_loader, val_loader, test_loader)
     
     end_total = time.time()
-    print(f"\nTotal setup time: {end_total - start_total:.2f}s")
-    print(f"Using {mp.cpu_count()} CPU cores")
+    print_performance_summary(train_time, val_time, test_time, end_total - start_total)
     
     return train_loader, val_loader, test_loader
+
+def benchmark_dataloader(dataloader, name, num_batches=5):
+    """Benchmark dataloader performance"""
+    start_time = time.time()
+    for i, batch in enumerate(dataloader):
+        if i >= num_batches:
+            break
+    end_time = time.time()
+    return (end_time - start_time) / num_batches
 
 if __name__ == "__main__":
     train_loader, val_loader, test_loader = main()
     
-    # Keep the program running briefly to see the plot
-    print("\nPress Ctrl+C to exit...")
+    # Keep the program running to see the plot
+    print("\nDataLoader setup complete! Press Ctrl+C to exit...")
     try:
-        time.sleep(5)
+        time.sleep(10)  # Show plot for 10 seconds
     except KeyboardInterrupt:
         print("Exiting...")
+        
+    # Cleanup workers properly
+    del train_loader, val_loader, test_loader
