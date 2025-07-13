@@ -1,0 +1,9 @@
+# Ignore all files in data directory
+*
+
+# But keep the .gitignore file itself
+!.gitignore
+
+# Optionally keep README or structure files
+# !README.md
+# !.gitkeep
