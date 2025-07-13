@@ -392,3 +392,89 @@ if __name__ == "__main__":
         
     # Cleanup workers properly
     del train_loader, val_loader, test_loader
+def create_data_loaders(data_dir, batch_size=4, num_workers=4):
+    """
+    Create train, validation, and test data loaders
+    
+    Args:
+        data_dir: Path to the data directory
+        batch_size: Batch size for training
+        num_workers: Number of workers for data loading
+    
+    Returns:
+        tuple: (train_loader, val_loader, test_loader)
+    """
+    # Set multiprocessing start method
+    if mp.get_start_method(allow_none=True) != 'spawn':
+        mp.set_start_method('spawn', force=True)
+    
+    # Prepare data directories
+    base_dir = data_dir
+    image_dir = os.path.join(base_dir, "CXR_png")
+    mask_dir = os.path.join(base_dir, "ManualMask")
+    
+    # Check if directories exist
+    for dir_path in [image_dir, mask_dir]:
+        if not os.path.exists(dir_path):
+            raise FileNotFoundError(f"Directory not found: {dir_path}")
+    
+    # Find mask directories
+    possible_left_dirs = ["leftMask", "left", "LeftMask", "left_mask", "left lung"]
+    possible_right_dirs = ["rightMask", "right", "RightMask", "right_mask", "right lung"]
+    
+    left_mask_dir = None
+    right_mask_dir = None
+    
+    for left_dir in possible_left_dirs:
+        if os.path.exists(os.path.join(mask_dir, left_dir)):
+            left_mask_dir = os.path.join(mask_dir, left_dir)
+            break
+    
+    for right_dir in possible_right_dirs:
+        if os.path.exists(os.path.join(mask_dir, right_dir)):
+            right_mask_dir = os.path.join(mask_dir, right_dir)
+            break
+    
+    if not left_mask_dir or not right_mask_dir:
+        raise FileNotFoundError(f"Could not find left/right mask directories in {mask_dir}")
+    
+    # Get common files
+    left_files = [f for f in os.listdir(left_mask_dir) if f.endswith('.png')]
+    right_files = [f for f in os.listdir(right_mask_dir) if f.endswith('.png')]
+    image_files = [f for f in os.listdir(image_dir) if f.endswith('.png')]
+    
+    common_files = list(set(left_files) & set(right_files) & set(image_files))
+    common_files.sort()
+    
+    # Create transforms
+    image_transform, mask_transform = create_transforms()
+    
+    # Split data
+    train_files, temp_files = train_test_split(common_files, test_size=0.3, random_state=42)
+    val_files, test_files = train_test_split(temp_files, test_size=0.5, random_state=42)
+    
+    # Create datasets
+    train_dataset = OptimizedLungDataset(
+        image_dir, left_mask_dir, right_mask_dir, 
+        train_files, image_transform=image_transform, mask_transform=mask_transform, 
+        preload=len(train_files) < 50
+    )
+    
+    val_dataset = OptimizedLungDataset(
+        image_dir, left_mask_dir, right_mask_dir,
+        val_files, image_transform=image_transform, mask_transform=mask_transform, 
+        preload=len(val_files) < 50
+    )
+    
+    test_dataset = OptimizedLungDataset(
+        image_dir, left_mask_dir, right_mask_dir,
+        test_files, image_transform=image_transform, mask_transform=mask_transform, 
+        preload=len(test_files) < 50
+    )
+    
+    # Create dataloaders
+    train_loader = create_optimized_dataloader(train_dataset, batch_size=batch_size, is_train=True)
+    val_loader = create_optimized_dataloader(val_dataset, batch_size=batch_size, shuffle=False, is_train=False)
+    test_loader = create_optimized_dataloader(test_dataset, batch_size=1, shuffle=False, is_train=False)
+    
+    return train_loader, val_loader, test_loader
