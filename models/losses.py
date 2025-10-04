@@ -1,7 +1,3 @@
-# ============================================================================
-#  models/losses.py
-# ============================================================================
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -13,9 +9,8 @@ class DiceLoss(nn.Module):
     
     def forward(self, predictions, targets):
         predictions = torch.sigmoid(predictions)
-        
-        predictions = predictions.view(-1)
-        targets = targets.view(-1)
+        predictions = predictions.contiguous().view(-1)
+        targets = targets.contiguous().view(-1)
         
         intersection = (predictions * targets).sum()
         dice = (2. * intersection + self.smooth) / (predictions.sum() + targets.sum() + self.smooth)
@@ -33,7 +28,4 @@ class CombinedLoss(nn.Module):
     def forward(self, predictions, targets):
         bce_loss = self.bce(predictions, targets)
         dice_loss = self.dice(predictions, targets)
-        
         return self.alpha * bce_loss + self.beta * dice_loss
-
-

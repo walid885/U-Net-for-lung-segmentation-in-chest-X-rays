@@ -1,7 +1,3 @@
-# ============================================================================
-#  utils/visualizer.py
-# ============================================================================
-
 import torch
 import matplotlib.pyplot as plt
 import numpy as np
@@ -29,25 +25,20 @@ class Visualizer:
                 predictions = torch.sigmoid(outputs)
                 predictions = (predictions > 0.5).float()
                 
-                # Move to CPU for visualization
                 image = images[0].cpu().numpy().transpose(1, 2, 0)
                 mask = masks[0].cpu().numpy().squeeze()
                 prediction = predictions[0].cpu().numpy().squeeze()
                 
-                # Normalize image for display
-                image = (image - image.min()) / (image.max() - image.min())
+                image = (image - image.min()) / (image.max() - image.min() + 1e-8)
                 
-                # Original image
                 axes[0, i].imshow(image, cmap='gray' if image.shape[2] == 1 else None)
                 axes[0, i].set_title('Original')
                 axes[0, i].axis('off')
                 
-                # Ground truth
                 axes[1, i].imshow(mask, cmap='gray')
                 axes[1, i].set_title('Ground Truth')
                 axes[1, i].axis('off')
                 
-                # Prediction
                 axes[2, i].imshow(prediction, cmap='gray')
                 axes[2, i].set_title('Prediction')
                 axes[2, i].axis('off')
@@ -71,23 +62,19 @@ class Visualizer:
                 predictions = torch.sigmoid(outputs)
                 predictions = (predictions > 0.5).float()
                 
-                # Move to CPU
                 image = images[0].cpu().numpy().transpose(1, 2, 0)
                 mask = masks[0].cpu().numpy().squeeze()
                 prediction = predictions[0].cpu().numpy().squeeze()
                 
-                # Normalize image
-                image = (image - image.min()) / (image.max() - image.min())
+                image = (image - image.min()) / (image.max() - image.min() + 1e-8)
                 if image.shape[2] == 1:
                     image = image.squeeze()
                 
-                # Ground truth overlay
                 axes[0, i].imshow(image, cmap='gray')
                 axes[0, i].imshow(mask, alpha=0.3, cmap='Reds')
                 axes[0, i].set_title('GT Overlay')
                 axes[0, i].axis('off')
                 
-                # Prediction overlay
                 axes[1, i].imshow(image, cmap='gray')
                 axes[1, i].imshow(prediction, alpha=0.3, cmap='Blues')
                 axes[1, i].set_title('Pred Overlay')
@@ -96,5 +83,3 @@ class Visualizer:
         plt.tight_layout()
         plt.savefig(self.results_dir / 'overlays.png', dpi=300, bbox_inches='tight')
         plt.close()
-
-

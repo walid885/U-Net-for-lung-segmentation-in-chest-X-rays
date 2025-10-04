@@ -6,6 +6,7 @@ from torch.cuda.amp import GradScaler, autocast
 import time
 import numpy as np
 from pathlib import Path
+from .metrics import dice_coefficient, iou_score, pixel_accuracy, sensitivity, specificity
 
 class Trainer:
     def __init__(self, model, train_loader, val_loader, device, learning_rate=1e-4, 
@@ -16,26 +17,21 @@ class Trainer:
         self.train_loader = train_loader
         self.val_loader = val_loader
         self.device = device
-        self.mixed_precision = mixed_precision
+        self.mixed_precision = mixed_precision and device.type == 'cuda'
         self.gradient_accumulation_steps = gradient_accumulation_steps
         self.early_stopping_patience = early_stopping_patience
         
-        # Optimizer with optimized settings
         self.optimizer = optim.AdamW(
             model.parameters(), 
             lr=learning_rate, 
             weight_decay=weight_decay,
             eps=1e-8,
-            foreach=True  # Faster multi-tensor operations
+            fused=True if device.type == 'cuda' else False
         )
         
-        # Loss function
         self.criterion = nn.BCEWithLogitsLoss()
+        self.scaler = GradScaler() if self.mixed_precision else None
         
-        # Mixed precision scaler
-        self.scaler = GradScaler() if mixed_precision else None
-        
-        # Learning rate scheduler
         if cosine_annealing:
             warmup_scheduler = LinearLR(
                 self.optimizer, 
@@ -56,35 +52,42 @@ class Trainer:
         else:
             self.scheduler = None
         
-        # Early stopping
         self.best_val_loss = float('inf')
+        self.best_val_dice = 0.0
         self.patience_counter = 0
         
-        # Metrics tracking
         self.train_losses = []
         self.val_losses = []
+        self.val_dices = []
+        self.val_ious = []
         
-        # Create results directory
         self.results_dir = Path('results')
         self.results_dir.mkdir(exist_ok=True)
         
-        print(f"Trainer initialized with mixed_precision={mixed_precision}")
-        print(f"Gradient accumulation steps: {gradient_accumulation_steps}")
-        print(f"Using scheduler: {cosine_annealing}")
+        # Benchmarking metrics
+        self.epoch_times = []
+        self.batch_times = []
+        
+        print(f"Trainer initialized:")
+        print(f"  Device: {device}")
+        print(f"  Mixed precision: {self.mixed_precision}")
+        print(f"  Gradient accumulation: {gradient_accumulation_steps}")
+        print(f"  Scheduler: {cosine_annealing}")
     
     def train_epoch(self):
-        """Optimized training epoch with mixed precision and gradient accumulation"""
         self.model.train()
         epoch_loss = 0
         num_batches = len(self.train_loader)
+        batch_times = []
         
         self.optimizer.zero_grad()
         
         for batch_idx, (images, masks) in enumerate(self.train_loader):
+            batch_start = time.time()
+            
             images = images.to(self.device, non_blocking=True)
             masks = masks.to(self.device, non_blocking=True)
             
-            # Mixed precision forward pass
             if self.mixed_precision:
                 with autocast():
                     outputs = self.model(images)
@@ -93,8 +96,9 @@ class Trainer:
                 
                 self.scaler.scale(loss).backward()
                 
-                # Gradient accumulation
                 if (batch_idx + 1) % self.gradient_accumulation_steps == 0:
+                    self.scaler.unscale_(self.optimizer)
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
                     self.scaler.step(self.optimizer)
                     self.scaler.update()
                     self.optimizer.zero_grad()
@@ -106,16 +110,16 @@ class Trainer:
                 loss.backward()
                 
                 if (batch_idx + 1) % self.gradient_accumulation_steps == 0:
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
                     self.optimizer.step()
                     self.optimizer.zero_grad()
             
             epoch_loss += loss.item() * self.gradient_accumulation_steps
+            batch_times.append(time.time() - batch_start)
             
-            # Progress update (every 10% of batches)
             if batch_idx % max(1, num_batches // 10) == 0:
-                print(f'Batch {batch_idx}/{num_batches}, Loss: {loss.item():.4f}')
+                print(f'  Batch {batch_idx}/{num_batches}, Loss: {loss.item():.4f}')
         
-        # Handle remaining gradients
         if num_batches % self.gradient_accumulation_steps != 0:
             if self.mixed_precision:
                 self.scaler.step(self.optimizer)
@@ -124,12 +128,18 @@ class Trainer:
                 self.optimizer.step()
             self.optimizer.zero_grad()
         
+        self.batch_times.extend(batch_times)
         return epoch_loss / num_batches
     
     def validate(self):
-        """Optimized validation with mixed precision"""
         self.model.eval()
         val_loss = 0
+        dice_scores = []
+        iou_scores = []
+        pixel_accs = []
+        sens_scores = []
+        spec_scores = []
+        
         num_batches = len(self.val_loader)
         
         with torch.no_grad():
@@ -146,69 +156,97 @@ class Trainer:
                     loss = self.criterion(outputs, masks)
                 
                 val_loss += loss.item()
+                
+                dice_scores.append(dice_coefficient(outputs, masks))
+                iou_scores.append(iou_score(outputs, masks))
+                pixel_accs.append(pixel_accuracy(outputs, masks))
+                sens_scores.append(sensitivity(outputs, masks).item())
+                spec_scores.append(specificity(outputs, masks).item())
         
-        return val_loss / num_batches
+        metrics = {
+            'loss': val_loss / num_batches,
+            'dice': np.mean(dice_scores),
+            'iou': np.mean(iou_scores),
+            'pixel_acc': np.mean(pixel_accs),
+            'sensitivity': np.mean(sens_scores),
+            'specificity': np.mean(spec_scores)
+        }
+        
+        return metrics
     
     def train(self, num_epochs):
-        """Main training loop with all optimizations"""
         print(f"Starting training for {num_epochs} epochs...")
-        start_time = time.time()
+        training_start = time.time()
         
         for epoch in range(num_epochs):
             epoch_start = time.time()
             
-            # Training
             train_loss = self.train_epoch()
+            val_metrics = self.validate()
             
-            # Validation
-            val_loss = self.validate()
-            
-            # Learning rate scheduling
             if self.scheduler:
                 self.scheduler.step()
             
-            # Track metrics
             self.train_losses.append(train_loss)
-            self.val_losses.append(val_loss)
+            self.val_losses.append(val_metrics['loss'])
+            self.val_dices.append(val_metrics['dice'])
+            self.val_ious.append(val_metrics['iou'])
             
-            # Early stopping check
-            if val_loss < self.best_val_loss:
-                self.best_val_loss = val_loss
+            epoch_time = time.time() - epoch_start
+            self.epoch_times.append(epoch_time)
+            
+            if val_metrics['dice'] > self.best_val_dice:
+                self.best_val_dice = val_metrics['dice']
+                self.best_val_loss = val_metrics['loss']
                 self.patience_counter = 0
-                # Save best model
+                
                 torch.save({
                     'epoch': epoch,
                     'model_state_dict': self.model.state_dict(),
                     'optimizer_state_dict': self.optimizer.state_dict(),
                     'train_loss': train_loss,
-                    'val_loss': val_loss,
+                    'val_loss': val_metrics['loss'],
+                    'best_val_dice': self.best_val_dice,
+                    'best_val_iou': val_metrics['iou'],
+                    'metrics': val_metrics
                 }, self.results_dir / 'best_model.pth')
             else:
                 self.patience_counter += 1
             
-            epoch_time = time.time() - epoch_start
             current_lr = self.optimizer.param_groups[0]['lr']
             
             print(f'Epoch {epoch+1}/{num_epochs}:')
             print(f'  Train Loss: {train_loss:.4f}')
-            print(f'  Val Loss: {val_loss:.4f}')
+            print(f'  Val Loss: {val_metrics["loss"]:.4f}')
+            print(f'  Val Dice: {val_metrics["dice"]:.4f}')
+            print(f'  Val IoU: {val_metrics["iou"]:.4f}')
+            print(f'  Val Pixel Acc: {val_metrics["pixel_acc"]:.4f}')
+            print(f'  Sensitivity: {val_metrics["sensitivity"]:.4f}')
+            print(f'  Specificity: {val_metrics["specificity"]:.4f}')
             print(f'  LR: {current_lr:.2e}')
             print(f'  Time: {epoch_time:.2f}s')
             print(f'  Patience: {self.patience_counter}/{self.early_stopping_patience}')
-            print('-' * 50)
+            print('-' * 60)
             
-            # Early stopping
             if self.patience_counter >= self.early_stopping_patience:
-                print(f"Early stopping triggered after {epoch+1} epochs")
+                print(f"Early stopping at epoch {epoch+1}")
                 break
         
-        total_time = time.time() - start_time
-        print(f"Training completed in {total_time:.2f} seconds")
-        print(f"Best validation loss: {self.best_val_loss:.4f}")
+        total_time = time.time() - training_start
         
-        # Load best model
-        checkpoint = torch.load(self.results_dir / 'best_model.pth')
+        print(f"\n{'='*60}")
+        print("TRAINING COMPLETE - PERFORMANCE METRICS")
+        print(f"{'='*60}")
+        print(f"Total training time: {total_time:.2f}s ({total_time/60:.2f}min)")
+        print(f"Average epoch time: {np.mean(self.epoch_times):.2f}s")
+        print(f"Average batch time: {np.mean(self.batch_times)*1000:.2f}ms")
+        print(f"Best validation Dice: {self.best_val_dice:.4f}")
+        print(f"Best validation loss: {self.best_val_loss:.4f}")
+        print(f"Final validation IoU: {self.val_ious[-1]:.4f}")
+        print(f"{'='*60}\n")
+        
+        checkpoint = torch.load(self.results_dir / 'best_model.pth', weights_only=False)
+
         self.model.load_state_dict(checkpoint['model_state_dict'])
-        print("Loaded best model weights")
         
         return self.train_losses, self.val_losses

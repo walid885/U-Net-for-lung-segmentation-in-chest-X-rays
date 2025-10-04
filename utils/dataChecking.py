@@ -1,14 +1,12 @@
 import os
 
 def explore_data_structure(data_dir):
-    """Debug function to explore the actual data structure"""
     print(f"Exploring: {data_dir}")
     
     if not os.path.exists(data_dir):
         print(f"ERROR: Directory {data_dir} does not exist!")
         return
     
-    # Check subdirectories
     subdirs = ['CXR_png', 'ManualMask', 'ClinicalReadings']
     
     for subdir in subdirs:
@@ -19,7 +17,6 @@ def explore_data_structure(data_dir):
             print(f"  Total files: {len(files)}")
             print(f"  First 5 files: {files[:5]}")
             
-            # Check file patterns
             png_files = [f for f in files if f.endswith('.png')]
             print(f"  PNG files: {len(png_files)}")
             
@@ -28,8 +25,8 @@ def explore_data_structure(data_dir):
                 right_masks = [f for f in files if 'right' in f.lower()]
                 print(f"  Left masks: {len(left_masks)}")
                 print(f"  Right masks: {len(right_masks)}")
-                print(f"  Sample left mask: {left_masks[:3] if left_masks else 'None'}")
-                print(f"  Sample right mask: {right_masks[:3] if right_masks else 'None'}")
+                print(f"  Sample left: {left_masks[:3] if left_masks else 'None'}")
+                print(f"  Sample right: {right_masks[:3] if right_masks else 'None'}")
         else:
             print(f"\n{subdir}: NOT FOUND")
 
